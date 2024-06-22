@@ -1,0 +1,138 @@
+version: '3'
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:${CP_VERSION:-latest}
+    hostname: kafka-zookeeper
+    container_name: kafka-zookeeper
+    ports:
+      - "21820:2181"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    networks:
+      - my_network
+    restart: on-failure:10
+    # restart: always
+    # chown -R 1000:1000 ./zoo
+    volumes: 
+      - ./kafka_volume/zoo/data:/var/lib/zookeeper/data:z
+      - ./kafka_volume/zoo/log:/var/lib/zookeeper/log:z
+
+  broker:
+    image: confluentinc/cp-kafka:${CP_VERSION:-latest}
+    hostname: kafka-broker
+    container_name: kafka-broker
+    depends_on:
+      - zookeeper
+    ports:
+      - "909:9092"
+      - "29092:29092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: 'kafka-zookeeper:2181'
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: EXTERNAL:PLAINTEXT,INTERNAL:PLAINTEXT
+      # if you want to use this image in your local machine :
+      #   - add this line to your /etc/hosts file -> 127.0.0.1 kafka-broker  
+      # if you want to use this image in a remote server you must do the followings : 
+      # 1- change localhost in the following line to the valid IP address of your remote server.
+      # 2- add this line to your /etc/hosts file in the remote server -> 127.0.0.1 kafka-broker  
+      # AWS : https://rmoff.net/2018/08/02/kafka-listeners-explained/
+      KAFKA_ADVERTISED_LISTENERS: EXTERNAL://localhost:909,INTERNAL://kafka-broker:29092
+      KAFKA_LISTENERS: EXTERNAL://:9092,INTERNAL://:29092
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_CONFLUENT_LICENSE_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_CONFLUENT_BALANCER_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_JMX_PORT: 9101
+      KAFKA_JMX_HOSTNAME: localhost
+      CONFLUENT_METRICS_REPORTER_BOOTSTRAP_SERVERS: kafka-broker:29092
+      CONFLUENT_METRICS_REPORTER_TOPIC_REPLICAS: 1
+      CONFLUENT_METRICS_ENABLE: 'true'
+      CONFLUENT_SUPPORT_CUSTOMER_ID: 'anonymous'
+    command: >
+      bash -c "
+      /etc/confluent/docker/run &
+      sleep 10 &&
+      kafka-topics --create --bootstrap-server localhost:9092 --replication-factor 1 --partitions 1 --topic users_info &&
+      kafka-topics --create --bootstrap-server localhost:9092 --replication-factor 1 --partitions 1 --topic timestamp_topic &&
+      kafka-topics --create --bootstrap-server localhost:9092 --replication-factor 1 --partitions 1 --topic label_topic &&
+      wait
+      "
+    networks:
+      - my_network
+    # restart: always
+    restart: on-failure:10
+
+    # chown -R 1000:1000 ./broker
+    volumes: 
+      - ./kafka_volume/broker/data:/var/lib/kafka/data:z
+
+  kafkaHQ:
+    image: tchiotludo/akhq
+    container_name: kafkaHQ
+    hostname: kafkaHQ
+    depends_on:
+      - broker
+    ports :
+      - 910:8080
+    environment:
+      AKHQ_CONFIGURATION: |
+        akhq:
+          connections:
+            docker-kafka-server:
+              properties:
+                bootstrap.servers: "kafka-broker:29092"
+                
+    networks:
+      - my_network
+    restart: on-failure:10
+    # restart: always
+
+  postgres:
+    container_name: ${CONTAINER_NAME:-postgres}
+    hostname: ${CONTAINER_NAME:-postgres}
+    image: postgres:${PG_VERSION:-16}
+    volumes:
+      - ./postgres/data:/var/lib/postgresql/data
+      - ./postgres/postgres-init:/docker-entrypoint-initdb.d  # Mounting the init script
+    environment:
+      - POSTGRES_PASSWORD=${DB_PASS:-postgres123}
+      - POSTGRES_USER=${DB_USER:-postgres}
+      - POSTGRES_DB=${DB_NAME:-user}
+      - POSTGRES_HOST_AUTH_METHOD=trust
+    networks:
+      - my_network
+    ports:
+      - ${PORT:-5434}:5432
+    restart: always
+
+
+  # pgadmin:
+  #   # https://www.pgadmin.org/docs/pgadmin4/latest/container_deployment.html
+  #   container_name: pgadmin4
+  #   hostname: pgadmin4
+  #   image: dpage/pgadmin4
+  #   restart: always
+  #   environment:
+  #     PGADMIN_DEFAULT_EMAIL: admin@admin.com
+  #     PGADMIN_DEFAULT_PASSWORD: pgadmin123
+  #   volumes:
+  #     #- ./pgadmin_data:/data
+  #     - ./postgres/pgadmin-data:/var/lib/pgadmin
+  #   ports:
+  #     - "5050:80"
+  #   networks:
+  #     - my_network 
+
+  data_pipeline_cronjob:
+    build: 
+      context: App
+    container_name: data_pipeline_cronjob
+    networks:
+      - my_network
+
+networks:
+  my_network:
